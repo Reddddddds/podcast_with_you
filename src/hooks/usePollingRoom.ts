@@ -1,10 +1,4 @@
-﻿/**
- * KV 轮询版 meeting room,替代 usePeerRoom(WebRTC)。
- * 每 1.5s GET 一次 host 当前播放状态,有变化就广播给本地的 onMessage 回调。
- * 写入:host 状态变化时 POST 到 server,server 用 updatedBy 屏蔽自反馈。
- */
-
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyncMessage } from "../lib/sync";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -23,9 +17,8 @@ interface PollingRoomOptions {
 }
 
 const POLL_INTERVAL_MS = 1500;
-const PEER_ID_KEY = "pwy:peerId";
+const FIRST_FETCH_DELAY_MS = 100;  // mount 后立即先 fetch 一次,不傻等 1.5s
 
-/** 给 client 拼 server endpoint */
 function endpoint(): string {
   const base = (import.meta.env.VITE_RESOLVE_URL ?? "").trim();
   if (!base) return "/api/room";
@@ -44,24 +37,24 @@ export function usePollingRoom(opts: PollingRoomOptions): IPollingRoom {
   const peerIdRef = useRef<string>(freshPeerId());
   const lastPostedRef = useRef<string>("");
   const handlersRef = useRef<Set<(msg: SyncMessage) => void>>(new Set());
-  const tickRef = useRef<number | null>(null);
-  const aliveRef = useRef<boolean>(false);
 
-  const send = useCallback((msg: SyncMessage) => {
-    if (!roomCode) return;
-    const json = JSON.stringify(msg);
-    if (json === lastPostedRef.current) return;
-    lastPostedRef.current = json;
-
-    const url = endpoint() + `?code=${encodeURIComponent(roomCode)}&peerId=${encodeURIComponent(peerIdRef.current)}`;
-    fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: json,
-    }).catch(() => {
-      /* 网络抖动:忽略,下次 tick 自动重试 */
-    });
-  }, [roomCode]);
+  const send = useCallback(
+    (msg: SyncMessage) => {
+      if (!roomCode) return;
+      const json = JSON.stringify(msg);
+      if (json === lastPostedRef.current) return;
+      lastPostedRef.current = json;
+      const url =
+        endpoint() +
+        `?code=${encodeURIComponent(roomCode)}&peerId=${encodeURIComponent(peerIdRef.current)}`;
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json,
+      }).catch(() => {});
+    },
+    [roomCode]
+  );
 
   useEffect(() => {
     if (!roomCode) {
@@ -69,47 +62,51 @@ export function usePollingRoom(opts: PollingRoomOptions): IPollingRoom {
       return;
     }
 
-    // 每次进入新房间重置 peerId
+    // 每次进入新房间重置 peerId 与 lastPosted,diff 端能拉到 host 最新
     peerIdRef.current = freshPeerId();
     lastPostedRef.current = "";
-    aliveRef.current = true;
     setStatus("connecting");
 
+    let alive = true;
+    let firstTimer: number | null = null;
+    let intervalId: number | null = null;
+
     const tick = async () => {
-      if (!aliveRef.current) return;
+      if (!alive) return;
       try {
-        const url = endpoint() + `?code=${encodeURIComponent(roomCode)}&peerId=${encodeURIComponent(peerIdRef.current)}`;
+        const url =
+          endpoint() +
+          `?code=${encodeURIComponent(roomCode)}&peerId=${encodeURIComponent(peerIdRef.current)}`;
         const r = await fetch(url, { method: "GET" });
-        if (!aliveRef.current) return;
+        if (!alive) return;
         if (r.ok) {
           const data = (await r.json()) as { ok: boolean; state?: SyncMessage };
           if (data.ok && data.state && typeof data.state === "object" && "type" in data.state) {
             handlersRef.current.forEach((h) => {
-              try { h(data.state as SyncMessage); } catch {}
+              try {
+                h(data.state as SyncMessage);
+              } catch {}
             });
           }
           setStatus("connected");
           setError(null);
         }
       } catch (e: any) {
-        if (!aliveRef.current) return;
+        if (!alive) return;
         setError(e?.message ?? "polling 失败");
         setStatus("error");
-      } finally {
-        if (aliveRef.current) {
-          tickRef.current = window.setTimeout(tick, POLL_INTERVAL_MS);
-        }
       }
     };
 
-    tick();
+    // mount 后立刻跑一次(immediate first poll)
+    firstTimer = window.setTimeout(tick, FIRST_FETCH_DELAY_MS);
+    // 然后每 1.5 秒稳定跑(setInterval 不被 React 打断)
+    intervalId = window.setInterval(tick, POLL_INTERVAL_MS);
 
     return () => {
-      aliveRef.current = false;
-      if (tickRef.current != null) {
-        clearTimeout(tickRef.current);
-        tickRef.current = null;
-      }
+      alive = false;
+      if (firstTimer != null) clearTimeout(firstTimer);
+      if (intervalId != null) clearInterval(intervalId);
     };
   }, [roomCode]);
 
@@ -121,14 +118,16 @@ export function usePollingRoom(opts: PollingRoomOptions): IPollingRoom {
   }, []);
 
   const leave = useCallback(() => {
-    aliveRef.current = false;
-    if (tickRef.current != null) {
-      clearTimeout(tickRef.current);
-      tickRef.current = null;
-    }
     setStatus("idle");
     setError(null);
   }, []);
 
-  return { status, partnerConnected: status === "connected", error, send, onMessage, leave };
+  return {
+    status,
+    partnerConnected: status === "connected",
+    error,
+    send,
+    onMessage,
+    leave,
+  };
 }
