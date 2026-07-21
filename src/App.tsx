@@ -215,6 +215,7 @@ export function App() {
               setUrlInput={setUrlInput}
               audioRef={audioContainerRef as any}
               readOnly={!room.partnerConnected}
+              role={role} 
             />
 
             <audio
