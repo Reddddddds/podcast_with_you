@@ -165,15 +165,7 @@ export function useSyncPlayback(
     a.addEventListener("error", onError);
 
     // host 端:每 500ms 主动 broadcast 自己的 currentTime
-    const iv = window.setInterval(readOnly ? refresh : () => {
-      const a2 = audioRef.current;
-      if (!a2 || a2.paused || applyingRemoteRef.current) return;
-      broadcast("state", {
-        playing: true,
-        currentTime: a2.currentTime,
-        rate: a2.playbackRate,
-      });
-    }, PROGRESS_INTERVAL_MS);
+    const iv = window.setInterval(refresh, 250);  
 
     return () => {
       clearInterval(iv);
