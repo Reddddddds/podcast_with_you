@@ -29,7 +29,13 @@ export function App() {
   const audioContainerRef = useRef<HTMLAudioElement | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
 
-    const room = usePollingRoom({ roomCode });
+  // 把 ref -> state 同步放在 commit 阶段(不用 useEffect)。
+  // 下方的 useSyncPlayback 依赖这 state,加 listener 必须有 element,否则 0:00/0:00 + 控制器全部失效。
+  useLayoutEffect(() => {
+    setAudioEl(audioContainerRef.current);
+  }, [screen]);
+
+  const room = usePollingRoom({ roomCode });
 
   // 重新同步当前 track 给对端(对端连接 / 刷新场景)
   useEffect(() => {
