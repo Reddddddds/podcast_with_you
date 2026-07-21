@@ -4,10 +4,26 @@ import { resolvePodcast, describeInputKind } from "../lib/resolvePodcast";
 
 interface IRoomGateProps {
   initialRoomCode: string | null;
-  /** 进入房间:host 完成创建时调用,带上解析后的音频直链与自动生成的房间号 */
   onCreate: (audioUrl: string, title: string | null, code: string) => void;
   onJoin: (roomCode: string) => void;
 }
+
+type ResolveStep = "idle" | "fetch" | "parse" | "ready";
+
+const STEP_LABEL: Record<ResolveStep, string> = {
+  idle: "",
+  fetch: "抓取页面",
+  parse: "解析链接",
+  ready: "完成",
+};
+
+/** 给前端能感知到的"三步动画"自动推进;后端 1-3 秒内通常就完成了 */
+const STEP_HOLD_MS: Record<ResolveStep, number> = {
+  idle: 0,
+  fetch: 900,
+  parse: 650,
+  ready: 400,
+};
 
 export function RoomGate(props: IRoomGateProps) {
   const { initialRoomCode, onCreate, onJoin } = props;
@@ -20,6 +36,8 @@ export function RoomGate(props: IRoomGateProps) {
   const [resolvedTitle, setResolvedTitle] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [resolveStep, setResolveStep] = useState<ResolveStep>("idle");
+  const [resolveError, setResolveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialRoomCode) {
@@ -41,26 +59,51 @@ export function RoomGate(props: IRoomGateProps) {
     }
 
     setResolving(true);
+    setResolveStep("fetch");
+    setResolveError(null);
     setResolvedAudioUrl(null);
     setResolvedTitle(null);
 
     let finalUrl: string;
     let title: string | null;
+    let needsParse = describeInputKind(url) === "platform";
 
-    if (describeInputKind(url) === "platform") {
-      const res = await resolvePodcast(url);
-      setResolving(false);
-      if (!res.ok) {
-        alert(`解析失败:${res.reason}\n\n你可以直接粘贴 .mp3 / .m4a 直链试试。`);
+    // 走 resolver
+    if (needsParse) {
+      // 步骤 1 已经开始(fetch);在等待响应中推进到 "parse"
+      const advanceTimer = setTimeout(() => {
+        setResolveStep((s) => (s === "fetch" ? "parse" : s));
+      }, STEP_HOLD_MS.fetch);
+
+      try {
+        const res = await resolvePodcast(url);
+        clearTimeout(advanceTimer);
+        if (!res.ok) {
+          setResolveStep("idle");
+          setResolving(false);
+          setResolveError(res.reason || "解析失败");
+          return;
+        }
+        finalUrl = res.audioUrl;
+        title = res.title || describeAudioUrl(url);
+      } catch (e: any) {
+        clearTimeout(advanceTimer);
+        setResolveStep("idle");
+        setResolving(false);
+        setResolveError(e?.message ?? "请求失败");
         return;
       }
-      finalUrl = res.audioUrl;
-      title = res.title || describeAudioUrl(url);
     } else {
-      setResolving(false);
+      // 直链:不需要远端解析,快速跑完展示
       finalUrl = url;
       title = describeAudioUrl(url);
+      setResolveStep("parse");
     }
+
+    // 步骤 2 / 推进到 ready
+    await wait(STEP_HOLD_MS.parse);
+    setResolveStep("ready");
+    await wait(STEP_HOLD_MS.ready);
 
     const code = makeRoomCode();
     setResolvedAudioUrl(finalUrl);
@@ -69,6 +112,7 @@ export function RoomGate(props: IRoomGateProps) {
     setShareLink(buildShareLink(code));
     localStorage.setItem("pwy:lastUrl", finalUrl);
     localStorage.setItem("pwy:lastTitle", title);
+    setResolving(false);
   };
 
   const handleEnterRoom = () => {
@@ -112,7 +156,7 @@ export function RoomGate(props: IRoomGateProps) {
         <div className="room-code">{generatedCode}</div>
         <div className="share-link">{shareLink}</div>
         <div className="row" style={{ gap: 8 }}>
-          <button className="btn" onClick={() => { setShareLink(null); setGeneratedCode(null); setResolvedAudioUrl(null); setResolvedTitle(null); }}>修改链接</button>
+          <button className="btn" onClick={() => { setShareLink(null); setGeneratedCode(null); setResolvedAudioUrl(null); setResolvedTitle(null); setResolveError(null); }}>修改链接</button>
           <button className="btn" onClick={copyShare}>{copied ? "已复制" : "复制链接"}</button>
           <button className="btn primary" style={{ flex: 1 }} onClick={handleEnterRoom}>进入房间</button>
         </div>
@@ -165,9 +209,32 @@ export function RoomGate(props: IRoomGateProps) {
             <span className="kbd">pod.link</span> / 任何 https mp3 / m4a / aac / ogg / wav / m3u8 直链。
             平台 URL 会通过 Cloudflare Worker 解析为直链。
           </p>
-          <button className="btn primary" onClick={handleCreate} disabled={resolving}>
-            {resolving ? "解析中…" : "生成房间号"}
-          </button>
+
+          {!resolving && (
+            <button className="btn primary" onClick={handleCreate}>
+              生成房间号
+            </button>
+          )}
+
+          {resolving && (
+            <div className="resolve-progress" role="status" aria-live="polite">
+              <div className="resolve-progress-title">正在解析(约 1-3 秒)</div>
+              <ol className="resolve-progress-steps">
+                <StepRow label="抓取页面" stepKey="fetch" current={resolveStep} />
+                <StepRow label="解析链接" stepKey="parse" current={resolveStep} />
+                <StepRow label="准备完成" stepKey="ready" current={resolveStep} />
+              </ol>
+              <div className="resolve-progress-bar"><span className="resolve-progress-bar-fill" data-step={resolveStep} /></div>
+            </div>
+          )}
+
+          {!resolving && resolveError && (
+            <div className="resolve-error" role="alert">
+              <strong>解析失败</strong>
+              <div className="muted">{resolveError}</div>
+              <button className="btn" onClick={handleCreate} style={{ marginTop: 8 }}>重试</button>
+            </div>
+          )}
         </div>
       )}
 
@@ -191,4 +258,27 @@ export function RoomGate(props: IRoomGateProps) {
       )}
     </div>
   );
+}
+
+function StepRow({ label, stepKey, current }: { label: string; stepKey: ResolveStep; current: ResolveStep }) {
+  const order: ResolveStep[] = ["fetch", "parse", "ready"];
+  const curIdx = order.indexOf(current);
+  const myIdx = order.indexOf(stepKey);
+  let state: "done" | "active" | "todo";
+  if (curIdx < 0) state = "todo";
+  else if (myIdx < curIdx) state = "done";
+  else if (myIdx === curIdx) state = current === "ready" ? "done" : "active";
+  else state = "todo";
+  return (
+    <li className={`step step-${state}`}>
+      <span className="step-dot" aria-hidden="true">
+        {state === "done" ? "✓" : state === "active" ? "•" : ""}
+      </span>
+      <span className="step-label">{label}</span>
+    </li>
+  );
+}
+
+function wait(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
