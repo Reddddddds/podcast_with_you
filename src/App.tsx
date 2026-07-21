@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RoomGate } from "./components/RoomGate";
 import { Player } from "./components/Player";
 import { usePollingRoom } from "./hooks/usePollingRoom";
