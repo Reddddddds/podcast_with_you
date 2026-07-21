@@ -219,6 +219,7 @@ export function App() {
               setUrlInput={setUrlInput}
               audioRef={{ current: audioEl } as any}
               readOnly={!room.partnerConnected}
+              role={role}
             />
 
             <audio

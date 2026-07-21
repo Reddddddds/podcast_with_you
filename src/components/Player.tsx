@@ -11,6 +11,7 @@ interface IPlayerProps {
   setUrlInput: (v: string) => void;
   audioRef: React.MutableRefObject<HTMLAudioElement | null>;
   readOnly?: boolean;
+  role?: "host" | "guest" | null;
 }
 
 function fmt(t: number): string {
@@ -24,7 +25,8 @@ function fmt(t: number): string {
 }
 
 export function Player(props: IPlayerProps) {
-  const { state, onPlayPause, onSeek, onRateChange, onUrlChange, urlInput, setUrlInput, audioRef, readOnly = false } = props;
+  const { state, onPlayPause, onSeek, onRateChange, onUrlChange, urlInput, setUrlInput, audioRef, readOnly = false, role = "host" } = props;
+  const isGuest = role === "guest";
   const progressRef = useRef<HTMLDivElement | null>(null);
   const [seeking, setSeeking] = useState(false);
 
@@ -119,25 +121,34 @@ export function Player(props: IPlayerProps) {
             ⚠ {state.error}
           </div>
         )}
-      </div>
 
-      {!state.url && !readOnly && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <label className="muted" htmlFor="pwy-url">输入音频 URL 开始</label>
-          <div className="row" style={{ gap: 8 }}>
-            <input
-              id="pwy-url"
-              className="input"
-              type="url"
-              placeholder="https://...mp3"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleUrlSubmit(); }}
-            />
-            <button className="btn primary" onClick={handleUrlSubmit}>加载</button>
+        {/* guest 已连上但还没收到 host 的 track → 等 */}
+        {!state.url && isGuest && (
+          <div className="empty-waiting">
+            <div className="empty-waiting-icon">⏳</div>
+            <div className="empty-waiting-title">等主持人添加音频</div>
+            <div className="empty-waiting-sub">主持人粘上链接后,这里会自动显示播放器。</div>
           </div>
-        </div>
-      )}
+        )}
+        {/* host 自己 + 没 url + 没连上 → 输入 URL */}
+        {!state.url && !isGuest && !readOnly && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <label className="muted" htmlFor="pwy-url">输入音频 URL 开始</label>
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                id="pwy-url"
+                className="input"
+                type="url"
+                placeholder="https://...mp3"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleUrlSubmit(); }}
+              />
+              <button className="btn primary" onClick={handleUrlSubmit}>加载</button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
