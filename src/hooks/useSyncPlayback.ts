@@ -1,3 +1,12 @@
+/**
+ * 把 audio 元素事件双向接到 SyncMessage:
+ * - 本地播放/暂停/seek/rate → broadcast 给对端
+ * - 收到对端 track/state/seek/rate → 应用到本地 audio
+ * - audio 的 duration / currentTime / progress 永远同步到 React state
+ *
+ * 接 ref 而非 element,避免父组件用 state 镜像 ref 时序问题。
+ */
+
 import { useCallback, useEffect, useRef } from "react";
 import type { SyncMessage } from "../lib/sync";
 
@@ -15,12 +24,8 @@ export interface IPlayerState {
 type SyncOut = (msg: SyncMessage) => void;
 type OnMessage = (h: (m: SyncMessage) => void) => () => void;
 
-/**
- * �� audio Ԫ�صı��ز���ͬ�����Զ�;ͬʱ�ѶԶ���Ϣ�����õ����� audio��
- * ͨ�� applyingRemote ��־λ��ֹ�¼���·��
- */
 export function useSyncPlayback(
-  audio: HTMLAudioElement | null,
+  audioRef: React.MutableRefObject<HTMLAudioElement | null>,
   state: IPlayerState,
   setState: (updater: (s: IPlayerState) => IPlayerState) => void,
   send: SyncOut,
@@ -29,100 +34,95 @@ export function useSyncPlayback(
 ) {
   const applyingRemoteRef = useRef(false);
 
-  // Զ�� �� ����
+  /* ---- 远端 → 本地 ---- */
   useEffect(() => {
-    if (!audio) return;
     const off = onMessage((msg) => {
-      if (!audio) return;
+      const a = audioRef.current;
+      if (!a) return;
       applyingRemoteRef.current = true;
       try {
         switch (msg.type) {
           case "track": {
             const { url, title } = msg.payload;
             if (url && url !== state.url) {
-              audio.src = url;
-              audio.load();
+              a.src = url;
+              a.load();
               setState((s) => ({ ...s, url, title: title ?? null, loading: true, error: null }));
             }
             break;
           }
           case "state": {
             const { playing, currentTime, rate } = msg.payload;
-            const drift = Math.abs(audio.currentTime - currentTime);
-            // ���� 300ms ƫ����ǿ�� seek
-            if (audio.readyState >= 1 && drift > 0.3) {
-              try { audio.currentTime = currentTime; } catch {}
+            const drift = Math.abs(a.currentTime - currentTime);
+            if (a.readyState >= 1 && drift > 0.3) {
+              try { a.currentTime = currentTime; } catch {}
             }
-            if (audio.playbackRate !== rate && rate > 0) {
-              audio.playbackRate = rate;
+            if (a.playbackRate !== rate && rate > 0) {
+              a.playbackRate = rate;
             }
-            if (playing && audio.paused) {
-              audio.play().catch(() => {});
-            } else if (!playing && !audio.paused) {
-              audio.pause();
-            }
+            if (playing && a.paused) a.play().catch(() => {});
+            else if (!playing && !a.paused) a.pause();
             setState((s) => ({ ...s, currentTime, rate, playing }));
             break;
           }
           case "seek": {
-            try { audio.currentTime = msg.payload.currentTime; } catch {}
+            try { a.currentTime = msg.payload.currentTime; } catch {}
             setState((s) => ({ ...s, currentTime: msg.payload.currentTime }));
             break;
           }
           case "rate": {
-            if (msg.payload.rate > 0) audio.playbackRate = msg.payload.rate;
+            if (msg.payload.rate > 0) a.playbackRate = msg.payload.rate;
             setState((s) => ({ ...s, rate: msg.payload.rate }));
-            break;
-          }
-          case "request-state": {
-            // 收到对端"刚连上"的请求 -> 把当前 host 的播放状态广播回去
-            if (audio) {
-              send({
-                type: "track",
-                payload: { url: audio.src, title: state.title ?? undefined },
-                t: Date.now(),
-              } as SyncMessage);
-              send({
-                type: "state",
-                payload: {
-                  playing: !audio.paused,
-                  currentTime: audio.currentTime,
-                  rate: audio.playbackRate,
-                },
-                t: Date.now(),
-              } as SyncMessage);
-            }
             break;
           }
         }
       } finally {
-        // �ȴ����� microtask �����־
         Promise.resolve().then(() => (applyingRemoteRef.current = false));
       }
     });
     return off;
-  }, [audio, onMessage, setState, state.url]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioRef, onMessage, setState, state.url]);
 
-  // ���� �� Զ��
   const broadcast = useCallback(
     (type: SyncMessage["type"], payload: any) => {
-      send({ type, payload, t: Date.now() } as SyncMessage);
+      send({ type, payload, t: Date.now() });
     },
     [send]
   );
 
   const broadcastState = useCallback(() => {
-    if (applyingRemoteRef.current || !audio) return;
+    const a = audioRef.current;
+    if (!a || applyingRemoteRef.current) return;
     broadcast("state", {
-      playing: !audio.paused,
-      currentTime: audio.currentTime,
-      rate: audio.playbackRate
+      playing: !a.paused,
+      currentTime: a.currentTime,
+      rate: a.playbackRate,
     });
-  }, [audio, broadcast]);
+  }, [audioRef, broadcast]);
 
-  // �� audio �¼� �� �㲥
+  const publishTrack = useCallback(
+    (url: string, title?: string) => {
+      broadcast("track", { url, title });
+    },
+    [broadcast]
+  );
+
+  /* ---- 本地 → 远端(attach audio 元素事件) ---- */
+  // 依赖 [audioRef, state.url]:url 变化时重新 attach(也包括 mount 后第一次)
   useEffect(() => {
-    if (!audio) return;
+    const a = audioRef.current;
+    if (!a) return;
+
+    const refresh = () => {
+      if (applyingRemoteRef.current) return;
+      const t = a.currentTime;
+      const d = a.duration;
+      setState((s) => {
+        if (s.currentTime === t && Math.abs((s.duration || 0) - (d || 0)) < 0.05) return s;
+        return { ...s, currentTime: t, duration: d || s.duration, loading: false };
+      });
+    };
 
     const onPlay = () => {
       if (applyingRemoteRef.current) return;
@@ -136,64 +136,52 @@ export function useSyncPlayback(
     };
     const onSeeked = () => {
       if (applyingRemoteRef.current) return;
-      setState((s) => ({ ...s, currentTime: audio.currentTime }));
-      broadcast("seek", { currentTime: audio.currentTime });
+      setState((s) => ({ ...s, currentTime: a.currentTime }));
+      broadcast("seek", { currentTime: a.currentTime });
     };
     const onRateChange = () => {
       if (applyingRemoteRef.current) return;
-      setState((s) => ({ ...s, rate: audio.playbackRate }));
-      broadcast("rate", { rate: audio.playbackRate });
+      setState((s) => ({ ...s, rate: a.playbackRate }));
+      broadcast("rate", { rate: a.playbackRate });
     };
-    const onTimeUpdate = () => {
-      if (applyingRemoteRef.current) return;
-      setState((s) => (s.currentTime === audio.currentTime ? s : { ...s, currentTime: audio.currentTime }));
-    };
-    const onLoadedMeta = () => {
-      setState((s) => ({ ...s, duration: audio.duration || 0, loading: false }));
-    };
-    const onWaiting = () => setState((s) => ({ ...s, loading: true }));
-    const onCanPlay = () => setState((s) => ({ ...s, loading: false }));
     const onError = () => {
-      const err = audio.error;
+      const err = a.error;
       setState((s) => ({
         ...s,
         loading: false,
-        error: err ? `���� ${err.code}: ${err.message || "����ʧ��"}` : "����ʧ��",
-        playing: false
+        error: err ? `代码 ${err.code}: ${err.message || "播放失败"}` : "播放失败",
+        playing: false,
       }));
     };
 
-    audio.addEventListener("play", onPlay);
-    audio.addEventListener("pause", onPause);
-    audio.addEventListener("seeked", onSeeked);
-    audio.addEventListener("ratechange", onRateChange);
-    audio.addEventListener("timeupdate", onTimeUpdate);
-    audio.addEventListener("loadedmetadata", onLoadedMeta);
-    audio.addEventListener("waiting", onWaiting);
-    audio.addEventListener("canplay", onCanPlay);
-    audio.addEventListener("error", onError);
+    // 立刻读一次,处理已 loaded 但 React 没收到的情况
+    refresh();
+
+    a.addEventListener("play", onPlay);
+    a.addEventListener("pause", onPause);
+    a.addEventListener("seeked", onSeeked);
+    a.addEventListener("ratechange", onRateChange);
+    a.addEventListener("timeupdate", refresh);
+    a.addEventListener("loadedmetadata", refresh);
+    a.addEventListener("durationchange", refresh);
+    a.addEventListener("canplay", refresh);
+    a.addEventListener("error", onError);
+
+    const iv = window.setInterval(refresh, 250);
 
     return () => {
-      audio.removeEventListener("play", onPlay);
-      audio.removeEventListener("pause", onPause);
-      audio.removeEventListener("seeked", onSeeked);
-      audio.removeEventListener("ratechange", onRateChange);
-      audio.removeEventListener("timeupdate", onTimeUpdate);
-      audio.removeEventListener("loadedmetadata", onLoadedMeta);
-      audio.removeEventListener("waiting", onWaiting);
-      audio.removeEventListener("canplay", onCanPlay);
-      audio.removeEventListener("error", onError);
+      clearInterval(iv);
+      a.removeEventListener("play", onPlay);
+      a.removeEventListener("pause", onPause);
+      a.removeEventListener("seeked", onSeeked);
+      a.removeEventListener("ratechange", onRateChange);
+      a.removeEventListener("timeupdate", refresh);
+      a.removeEventListener("loadedmetadata", refresh);
+      a.removeEventListener("durationchange", refresh);
+      a.removeEventListener("canplay", refresh);
+      a.removeEventListener("error", onError);
     };
-  }, [audio, broadcast, broadcastState, setState]);
-
-  // �����㲥һ�� track(����"�������û����,�ȸ��߶Է���ʲô")
-  const publishTrack = useCallback(
-    (url: string, title?: string) => {
-      broadcast("track", { url, title });
-      setState((s) => ({ ...s, url, title: title ?? s.title, loading: !!url }));
-    },
-    [broadcast, setState]
-  );
+  }, [audioRef, state.url, setState, broadcast, broadcastState]);
 
   return { publishTrack, broadcastState };
 }

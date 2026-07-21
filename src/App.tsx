@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RoomGate } from "./components/RoomGate";
 import { Player } from "./components/Player";
 import { usePollingRoom } from "./hooks/usePollingRoom";
@@ -26,28 +26,29 @@ export function App() {
   const [role, setRole] = useState<Role>(null);
   const [urlInput, setUrlInput] = useState("");
   const [playerState, setPlayerState] = useState<IPlayerState>(initialState);
+  // 直接用 ref,删了 audioEl state。useSyncPlayback 接 ref object 后永远拿到最新 element。
   const audioContainerRef = useRef<HTMLAudioElement | null>(null);
-  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
-
-  // 把 ref -> state 同步放在 commit 阶段(不用 useEffect)。
-  // 下方的 useSyncPlayback 依赖这 state,加 listener 必须有 element,否则 0:00/0:00 + 控制器全部失效。
-  useLayoutEffect(() => {
-    setAudioEl(audioContainerRef.current);
-  }, [screen]);
 
   const room = usePollingRoom({ roomCode });
 
-  // Host 设置了 url / roomCode 一就位就立刻推一次到 KV,
-  // 这样即使没有 guest 在房间里,KV 也有"当前播什么"
+  // URL 一就位就推一次(KV 持久化当前播客)。不依赖 partnerConnected。
   useEffect(() => {
     if (!roomCode || !playerState.url) return;
-    room.send({ type: "track", payload: { url: playerState.url, title: playerState.title ?? undefined }, t: Date.now() });
-    room.send({ type: "state", payload: { playing: playerState.playing, currentTime: playerState.currentTime, rate: playerState.rate }, t: Date.now() });
+    room.send({
+      type: "track",
+      payload: { url: playerState.url, title: playerState.title ?? undefined },
+      t: Date.now(),
+    });
+    room.send({
+      type: "state",
+      payload: { playing: playerState.playing, currentTime: playerState.currentTime, rate: playerState.rate },
+      t: Date.now(),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomCode, playerState.url]);
 
   const { publishTrack, broadcastState } = useSyncPlayback(
-    audioEl,
+    audioContainerRef,                    // ← 传 ref 而非 state
     playerState,
     setPlayerState,
     room.send,
@@ -55,7 +56,7 @@ export function App() {
     room.partnerConnected
   );
 
-  // 初次挂载:从 URL 预填房间号 -> 自动进入 join 流程
+  // 初次挂载:从 URL 预填房间号 -> guest 角色
   useEffect(() => {
     if (typeof window === "undefined") return;
     const code = readRoomFromUrl(window.location.href);
@@ -73,37 +74,23 @@ export function App() {
         title: playerState.title ?? "Podcast With You",
         artist: "一起听",
       });
-      const a = audioEl;
+      const a = audioContainerRef.current;
       if (!a) return;
       navigator.mediaSession.setActionHandler("play", () => a.play());
       navigator.mediaSession.setActionHandler("pause", () => a.pause());
       navigator.mediaSession.setActionHandler("seekbackward", () => { a.currentTime = Math.max(0, a.currentTime - 10); });
       navigator.mediaSession.setActionHandler("seekforward", () => { a.currentTime = Math.min((a.duration || a.currentTime + 10), a.currentTime + 10); });
     } catch {}
-  }, [playerState.title, audioEl]);
+  }, [playerState.title]);
 
-  useEffect(() => {
-    if (!("mediaSession" in navigator)) return;
-    try {
-      navigator.mediaSession.playbackState = playerState.playing ? "playing" : "paused";
-    } catch {}
-  }, [playerState.playing]);
-
-  // RoomGate 完成解析后调用此回调,audioUrl 已是直链
   const enterCreate = useCallback((audioUrl: string, title: string | null, code: string) => {
     if (audioUrl) {
-      setPlayerState((s) => ({
-        ...s,
-        url: audioUrl,
-        title: title ?? describeAudioUrl(audioUrl),
-        loading: true,
-      }));
-
+      setPlayerState((s) => ({ ...s, url: audioUrl, title: title ?? describeAudioUrl(audioUrl), loading: true }));
     }
     setRoomCode(code);
     setRole("host");
     setScreen("room");
-  }, [publishTrack]);
+  }, []);
 
   const enterJoin = useCallback((code: string) => {
     setRoomCode(code);
@@ -119,7 +106,6 @@ export function App() {
     setPlayerState(initialState);
   }, [room]);
 
-  // 房间里换 URL:必须是直链(由用户在 Player 输入框里粘,或者在创建时已经解析)
   const handleUrlChange = useCallback((url: string) => {
     if (!isDirectAudioUrl(url)) {
       alert("URL 不像可直接播放的音频文件(mp3/m4a/aac/ogg/wav/m3u8)。");
@@ -129,37 +115,31 @@ export function App() {
     publishTrack(url);
   }, [publishTrack]);
 
+  // 全程直接读 ref,不再用 audioEl state
   const handlePlayPause = useCallback(() => {
-    const a = audioContainerRef.current;     // 直接读 ref,绕开 state 闭包空值问题
-    if (!a) return;
-    if (!a.src) {
-      console.warn("[play] audio src empty");
-      return;
-    }
+    const a = audioContainerRef.current;
+    if (!a || !a.src) return;
     if (a.paused) {
-      a.play().catch((e) => {
-        console.warn("[play] rejected:", e?.name, e?.message);
-        setPlayerState((s) => ({ ...s, error: `浏览器阻止自动播放:${e?.message ?? "请确认页面有用户交互"}` }));
-      });
+      a.play().catch((e) => console.warn("[play]", e?.name, e?.message));
     } else {
       a.pause();
     }
-  }, []);                                  // 不依赖任何闭包变量,空依赖
+  }, []);
 
   const handleSeek = useCallback((t: number) => {
-    const a = audioEl;
+    const a = audioContainerRef.current;
     if (!a) return;
     try { a.currentTime = t; } catch {}
     setPlayerState((s) => ({ ...s, currentTime: t }));
     broadcastState();
-  }, [audioEl, broadcastState]);
+  }, [broadcastState]);
 
   const handleRateChange = useCallback((r: number) => {
-    const a = audioEl;
+    const a = audioContainerRef.current;
     if (!a) return;
     a.playbackRate = r;
     setPlayerState((s) => ({ ...s, rate: r }));
-  }, [audioEl]);
+  }, []);
 
   const statusText = useMemo(() => {
     switch (room.status) {
@@ -172,7 +152,6 @@ export function App() {
   }, [room.status, roomCode, room.error]);
 
   const statusClass = room.status === "connected" ? "ok" : room.status === "error" ? "warn" : "";
-
   const shareLink = roomCode ? buildShareLink(roomCode) : "";
 
   const copyShare = async () => {
@@ -233,9 +212,8 @@ export function App() {
               onUrlChange={handleUrlChange}
               urlInput={urlInput}
               setUrlInput={setUrlInput}
-              audioRef={{ current: audioEl } as any}
+              audioRef={audioContainerRef as any}
               readOnly={!room.partnerConnected}
-              role={role}
             />
 
             <audio
