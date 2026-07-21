@@ -48,12 +48,13 @@ export function App() {
   }, [roomCode, playerState.url]);
 
   const { publishTrack, broadcastState } = useSyncPlayback(
-    audioContainerRef,                    // ← 传 ref 而非 state
+    audioContainerRef,
     playerState,
     setPlayerState,
     room.send,
     room.onMessage,
-    room.partnerConnected
+    room.partnerConnected,
+    role === "guest"                                  // ← guest 不 broadcast
   );
 
   // 初次挂载:从 URL 预填房间号 -> guest 角色

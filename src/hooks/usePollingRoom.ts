@@ -16,7 +16,7 @@ interface PollingRoomOptions {
   roomCode: string | null;
 }
 
-const POLL_INTERVAL_MS = 1500;
+const POLL_INTERVAL_MS = 500;
 const FIRST_FETCH_DELAY_MS = 100;  // mount 后立即先 fetch 一次,不傻等 1.5s
 
 function endpoint(): string {
