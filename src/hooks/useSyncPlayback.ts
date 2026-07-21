@@ -1,12 +1,3 @@
-/**
- * 把 audio 元素事件双向接到 SyncMessage:
- * - 本地播放/暂停/seek/rate/进度 → broadcast 给对端(host)
- * - 收到对端 state → 应用到本地 audio
- *
- * readOnly = true 时(guest):只接收对端消息,不主动 broadcast。
- * 这避免了"host 落后,guest 跳到 host 位置,guest 又被 host 拉回"的拉锯循环。
- */
-
 import { useCallback, useEffect, useRef } from "react";
 import type { SyncMessage } from "../lib/sync";
 
@@ -24,7 +15,9 @@ export interface IPlayerState {
 type SyncOut = (msg: SyncMessage) => void;
 type OnMessage = (h: (m: SyncMessage) => void) => () => void;
 
-const PROGRESS_INTERVAL_MS = 500; // host 每 500ms 把自己的 currentTime 广播一次
+const PROGRESS_INTERVAL_MS = 500;
+// drift < 5s 直接不 seek(避免 polling 抖动鬼畜)
+const SEEK_DRIFT_THRESHOLD = 5.0;
 
 export function useSyncPlayback(
   audioRef: React.MutableRefObject<HTMLAudioElement | null>,
@@ -36,6 +29,8 @@ export function useSyncPlayback(
   readOnly: boolean = false
 ) {
   const applyingRemoteRef = useRef(false);
+  // 用 ref 反映当前 audio 实际 src(无闭包问题)
+  const currentUrlRef = useRef<string | null>(null);
 
   /* ---- 远端 → 本地 ---- */
   useEffect(() => {
@@ -47,7 +42,8 @@ export function useSyncPlayback(
         switch (msg.type) {
           case "track": {
             const { url, title } = msg.payload;
-            if (url && url !== state.url) {
+            if (url && url !== currentUrlRef.current) {
+              currentUrlRef.current = url;
               a.src = url;
               a.load();
               setState((s) => ({ ...s, url, title: title ?? null, loading: true, error: null }));
@@ -57,7 +53,7 @@ export function useSyncPlayback(
           case "state": {
             const { playing, currentTime, rate } = msg.payload;
             const drift = Math.abs(a.currentTime - currentTime);
-            if (a.readyState >= 1 && drift > 0.3) {
+            if (a.readyState >= 1 && drift > SEEK_DRIFT_THRESHOLD) {
               try { a.currentTime = currentTime; } catch {}
             }
             if (a.playbackRate !== rate && rate > 0) {
@@ -69,6 +65,7 @@ export function useSyncPlayback(
             break;
           }
           case "seek": {
+            // seek 消息现在不用了(host 用 state 替代),留兼容
             try { a.currentTime = msg.payload.currentTime; } catch {}
             setState((s) => ({ ...s, currentTime: msg.payload.currentTime }));
             break;
@@ -84,12 +81,10 @@ export function useSyncPlayback(
       }
     });
     return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioRef, onMessage, setState, state.url]);
+  }, [audioRef, onMessage, setState]);
 
   const broadcast = useCallback(
     (type: SyncMessage["type"], payload: any) => {
-      // guest 只接收不发送
       if (readOnly) return;
       send({ type, payload, t: Date.now() });
     },
@@ -113,7 +108,7 @@ export function useSyncPlayback(
     [broadcast]
   );
 
-  /* ---- 本地 audio 事件 → 远端 ---- */
+  /* ---- 本地 audio 事件 → 远端(host only) ---- */
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
@@ -141,12 +136,12 @@ export function useSyncPlayback(
     const onSeeked = () => {
       if (applyingRemoteRef.current) return;
       setState((s) => ({ ...s, currentTime: a.currentTime }));
-      broadcast("seek", { currentTime: a.currentTime });
+      if (!readOnly) broadcast("seek", { currentTime: a.currentTime });
     };
     const onRateChange = () => {
       if (applyingRemoteRef.current) return;
       setState((s) => ({ ...s, rate: a.playbackRate }));
-      broadcast("rate", { rate: a.playbackRate });
+      if (!readOnly) broadcast("rate", { rate: a.playbackRate });
     };
     const onError = () => {
       const err = a.error;
@@ -169,7 +164,7 @@ export function useSyncPlayback(
     a.addEventListener("canplay", refresh);
     a.addEventListener("error", onError);
 
-    // host 端:每 500ms 把自己的 currentTime 广播,让 guest 知道 host 进度
+    // host 端:每 500ms 主动 broadcast 自己的 currentTime
     const iv = window.setInterval(readOnly ? refresh : () => {
       const a2 = audioRef.current;
       if (!a2 || a2.paused || applyingRemoteRef.current) return;
