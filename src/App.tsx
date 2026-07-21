@@ -37,14 +37,14 @@ export function App() {
 
   const room = usePollingRoom({ roomCode });
 
-  // 重新同步当前 track 给对端(对端连接 / 刷新场景)
+  // Host 设置了 url / roomCode 一就位就立刻推一次到 KV,
+  // 这样即使没有 guest 在房间里,KV 也有"当前播什么"
   useEffect(() => {
-    if (!room.partnerConnected || !playerState.url) return;
+    if (!roomCode || !playerState.url) return;
     room.send({ type: "track", payload: { url: playerState.url, title: playerState.title ?? undefined }, t: Date.now() });
     room.send({ type: "state", payload: { playing: playerState.playing, currentTime: playerState.currentTime, rate: playerState.rate }, t: Date.now() });
-    // 只在 partnerConnected 切换时跑(不要因为播放进度而重复发整条 track)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room.partnerConnected]);
+  }, [roomCode, playerState.url]);
 
   const { publishTrack, broadcastState } = useSyncPlayback(
     audioEl,
@@ -98,7 +98,7 @@ export function App() {
         title: title ?? describeAudioUrl(audioUrl),
         loading: true,
       }));
-      publishTrack(audioUrl, title ?? undefined);
+
     }
     setRoomCode(code);
     setRole("host");
