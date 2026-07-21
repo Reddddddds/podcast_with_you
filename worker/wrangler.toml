@@ -1,0 +1,9 @@
+﻿name = "podcast-resolver"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# 允许的 origin (用 * 是因为只返回 URL,不返回凭据)
+# 想更严:把 * 换成 "https://Reddddddds.github.io"
+[vars]
+ALLOWED_ORIGIN = "*"
+COMPATIBLE_VERSION = "2026-07"

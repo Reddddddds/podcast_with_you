@@ -1,4 +1,4 @@
-﻿﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RoomGate } from "./components/RoomGate";
 import { Player } from "./components/Player";
 import { usePeerRoom } from "./hooks/usePeerRoom";
@@ -28,16 +28,16 @@ export function App() {
   const [playerState, setPlayerState] = useState<IPlayerState>(initialState);
   const audioContainerRef = useRef<HTMLAudioElement | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
-  // ref 指向 wrapper 容器,内部实际 audio 通过 querySelector 拿
-  useEffect(() => { setAudioEl(audioContainerRef.current); }, [screen]);
 
   const room = usePeerRoom({ roomCode, isHost: role === "host" });
 
-  // 重连后 / 对端连接状态变化时,重新同步当前 track 给对端
+  // 重新同步当前 track 给对端(对端连接 / 刷新场景)
   useEffect(() => {
     if (!room.partnerConnected || !playerState.url) return;
     room.send({ type: "track", payload: { url: playerState.url, title: playerState.title ?? undefined }, t: Date.now() });
     room.send({ type: "state", payload: { playing: playerState.playing, currentTime: playerState.currentTime, rate: playerState.rate }, t: Date.now() });
+    // 只在 partnerConnected 切换时跑(不要因为播放进度而重复发整条 track)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.partnerConnected]);
 
   const { publishTrack, broadcastState } = useSyncPlayback(
@@ -48,7 +48,7 @@ export function App() {
     room.onMessage
   );
 
-  // 初次挂载:从 URL 预填房间号
+  // 初次挂载:从 URL 预填房间号 -> 自动进入 join 流程
   useEffect(() => {
     if (typeof window === "undefined") return;
     const code = readRoomFromUrl(window.location.href);
@@ -82,10 +82,16 @@ export function App() {
     } catch {}
   }, [playerState.playing]);
 
-  const enterCreate = useCallback((audioUrl: string, code: string) => {
-    if (audioUrl && isDirectAudioUrl(audioUrl)) {
-      setPlayerState((s) => ({ ...s, url: audioUrl, title: describeAudioUrl(audioUrl), loading: !!audioUrl }));
-      publishTrack(audioUrl, describeAudioUrl(audioUrl));
+  // RoomGate 完成解析后调用此回调,audioUrl 已是直链
+  const enterCreate = useCallback((audioUrl: string, title: string | null, code: string) => {
+    if (audioUrl) {
+      setPlayerState((s) => ({
+        ...s,
+        url: audioUrl,
+        title: title ?? describeAudioUrl(audioUrl),
+        loading: true,
+      }));
+      publishTrack(audioUrl, title ?? undefined);
     }
     setRoomCode(code);
     setRole("host");
@@ -106,13 +112,14 @@ export function App() {
     setPlayerState(initialState);
   }, [room]);
 
+  // 房间里换 URL:必须是直链(由用户在 Player 输入框里粘,或者在创建时已经解析)
   const handleUrlChange = useCallback((url: string) => {
     if (!isDirectAudioUrl(url)) {
       alert("URL 不像可直接播放的音频文件(mp3/m4a/aac/ogg/wav/m3u8)。");
       return;
     }
     setPlayerState((s) => ({ ...s, url, title: describeAudioUrl(url), loading: true, error: null }));
-    publishTrack(url, describeAudioUrl(url));
+    publishTrack(url);
   }, [publishTrack]);
 
   const handlePlayPause = useCallback(() => {
