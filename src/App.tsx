@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RoomGate } from "./components/RoomGate";
 import { Player } from "./components/Player";
-import { usePeerRoom } from "./hooks/usePeerRoom";
+import { usePollingRoom } from "./hooks/usePollingRoom";
 import { useSyncPlayback } from "./hooks/useSyncPlayback";
 import type { IPlayerState } from "./hooks/useSyncPlayback";
 import { buildShareLink, describeAudioUrl, isDirectAudioUrl, readRoomFromUrl } from "./lib/sync";
@@ -29,7 +29,7 @@ export function App() {
   const audioContainerRef = useRef<HTMLAudioElement | null>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
 
-  const room = usePeerRoom({ roomCode, isHost: role === "host" });
+    const room = usePollingRoom({ roomCode });
 
   // 重新同步当前 track 给对端(对端连接 / 刷新场景)
   useEffect(() => {
@@ -148,13 +148,12 @@ export function App() {
   const statusText = useMemo(() => {
     switch (room.status) {
       case "idle": return "未连接";
-      case "initializing": return "初始化中…";
-      case "waiting": return roomCode ? `等待对方加入 ${roomCode}` : "等待对方加入…";
-      case "connecting": return `连接到 ${roomCode ?? ""} …`;
-      case "connected": return "已同步";
-      case "error": return "连接出错";
+      case "connecting": return "连接中…";
+      case "connected": return roomCode ? `已同步 ${roomCode}` : "已同步";
+      case "error": return `连接出错${room.error ? `(${room.error})` : ""}`;
+      default: return "";
     }
-  }, [room.status, roomCode]);
+  }, [room.status, roomCode, room.error]);
 
   const statusClass = room.status === "connected" ? "ok" : room.status === "error" ? "warn" : "";
 

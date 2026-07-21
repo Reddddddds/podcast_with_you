@@ -2,8 +2,17 @@
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
-# 允许的 origin (用 * 是因为只返回 URL,不返回凭据)
-# 想更严:把 * 换成 "https://Reddddddds.github.io"
+# 公开 CORS(返回的只是 host 当前播放状态,非凭据)
 [vars]
 ALLOWED_ORIGIN = "*"
-COMPATIBLE_VERSION = "2026-07"
+
+# KV 命名空间,绑定到 env.ROOMS
+# 第一次 deploy 你得:
+#   1. cd worker
+#   2. npx wrangler kv namespace create ROOMS
+#   3. 把输出的 id 粘到下面 id = "" 里
+#   4. 再 npx wrangler deploy
+[[kv_namespaces]]
+binding = "ROOMS"
+id = "b22367911aa443b082d05d8890add8ed"
+preview_id = "preview-rooms"
