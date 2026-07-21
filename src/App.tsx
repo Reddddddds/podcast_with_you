@@ -124,11 +124,21 @@ export function App() {
   }, [publishTrack]);
 
   const handlePlayPause = useCallback(() => {
-    const a = audioEl;
-    if (!a || !playerState.url) return;
-    if (a.paused) a.play().catch(() => {});
-    else a.pause();
-  }, [audioEl, playerState.url]);
+    const a = audioContainerRef.current;     // 直接读 ref,绕开 state 闭包空值问题
+    if (!a) return;
+    if (!a.src) {
+      console.warn("[play] audio src empty");
+      return;
+    }
+    if (a.paused) {
+      a.play().catch((e) => {
+        console.warn("[play] rejected:", e?.name, e?.message);
+        setPlayerState((s) => ({ ...s, error: `浏览器阻止自动播放:${e?.message ?? "请确认页面有用户交互"}` }));
+      });
+    } else {
+      a.pause();
+    }
+  }, []);                                  // 不依赖任何闭包变量,空依赖
 
   const handleSeek = useCallback((t: number) => {
     const a = audioEl;
