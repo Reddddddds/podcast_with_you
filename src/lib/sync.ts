@@ -4,7 +4,8 @@
   | { type: "seek"; payload: { currentTime: number }; t: number }
   | { type: "rate"; payload: { rate: number }; t: number }
   | { type: "ping"; payload: { sentAt: number }; t: number }
-  | { type: "pong"; payload: { sentAt: number; receivedAt: number }; t: number };
+  | { type: "pong"; payload: { sentAt: number; receivedAt: number }; t: number }
+  | { type: "request-state"; t: number };
 
 export interface IRoom {
   code: string;

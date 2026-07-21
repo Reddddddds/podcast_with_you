@@ -45,7 +45,8 @@ export function App() {
     playerState,
     setPlayerState,
     room.send,
-    room.onMessage
+    room.onMessage,
+    room.partnerConnected
   );
 
   // 初次挂载:从 URL 预填房间号 -> 自动进入 join 流程
